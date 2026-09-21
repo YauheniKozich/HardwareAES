@@ -1,57 +1,68 @@
+import CryptoKit
 import Foundation
 
-/// Secure file encryption vault using hardware-accelerated AES.
-/// Fully thread-safe and protected against IV reuse attacks.
+/// Authenticated file container built on top of the low-level CTR primitive.
+///
+/// Format:
+/// [1 byte version][16 byte IV][ciphertext][32 byte HMAC-SHA256 tag]
 public final actor SecureFileVault {
+    private static let formatVersion: UInt8 = 1
+    private static let ivLength = 16
+    private static let tagLength = 32
+
     private let engine: any HardwareAESEngineProtocol
-    
-    /// Создаем vault, привязавшись только к движку (который держит SecureKey).
-    /// Режим (и IV) больше не фиксируются жестко в свойствах.
-    public init(engine: any HardwareAESEngineProtocol) {
+    private let authenticationKey: SymmetricKey
+
+    /// Creates a vault. The key is used only to authenticate the container;
+    /// encryption and decryption are performed by the supplied engine.
+    public init(engine: any HardwareAESEngineProtocol, key: SecureKey) {
         self.engine = engine
+        self.authenticationKey = SymmetricKey(data: key.keyData)
     }
-    
-    /// Encrypts data using AES-CTR with a cryptographically secure random IV.
-    ///
-    /// - Parameter plaintext: The plaintext data to encrypt.
-    /// - Returns: Packaged data containing: [16 bytes IV] + [Ciphertext].
-    /// - Throws: `AESError` if encryption fails.
+
+    /// Encrypts data using AES-CTR and authenticates the complete container.
     public func encryptCTR(data plaintext: Data) throws -> Data {
-        // 1. Генерируем уникальный IV для КАЖДОГО вызова шифрования
         let iv = try AESIV.random()
-        let mode = AESMode.ctr(iv: iv)
-        
-        // 2. Шифруем данные
-        let ciphertext = try engine.encrypt(plaintext, mode: mode)
-        
-        // 3. Упаковываем IV вместе с шифротекстом, чтобы дешифратор знал, как читать файл
-        var packagedData = Data()
-        packagedData.append(iv.data)
-        packagedData.append(ciphertext)
-        
-        return packagedData
+        let ciphertext = try engine.encrypt(plaintext, mode: .ctr(iv: iv))
+
+        var authenticatedContent = Data([Self.formatVersion])
+        authenticatedContent.append(iv.data)
+        authenticatedContent.append(ciphertext)
+
+        let tag = HMAC<SHA256>.authenticationCode(
+            for: authenticatedContent,
+            using: authenticationKey
+        )
+        authenticatedContent.append(contentsOf: tag)
+        return authenticatedContent
     }
-    
-    /// Decrypts data that was encrypted via `encryptCTR(data:)`.
-    ///
-    /// - Parameter packagedData: Packaged data containing: [16 bytes IV] + [Ciphertext].
-    /// - Returns: The decrypted plaintext data.
-    /// - Throws: `AESError` if decryption fails or data is corrupted.
+
+    /// Authenticates and decrypts a container produced by encryptCTR(data:).
     public func decryptCTR(data packagedData: Data) throws -> Data {
-        // Минимальный размер файла должен быть больше размера IV (16 байт)
-        guard packagedData.count > 16 else {
+        let minimumSize = 1 + Self.ivLength + Self.tagLength
+        guard packagedData.count >= minimumSize else {
             throw AESError.invalidCiphertextSize
         }
-        
-        // 1. Извлекаем IV из первых 16 байт пакета
-        let ivData = packagedData.prefix(16)
-        let iv = try AESIV(ivData)
-        let mode = AESMode.ctr(iv: iv)
-        
-        // 2. Извлекаем чистый шифротекст
-        let ciphertext = packagedData.dropFirst(16)
-        
-        // 3. Дешифруем
-        return try engine.decrypt(ciphertext, mode: mode)
+
+        guard packagedData[0] == Self.formatVersion else {
+            throw AESError.invalidCiphertextSize
+        }
+
+        let authenticatedEnd = packagedData.count - Self.tagLength
+        let authenticatedContent = packagedData.prefix(authenticatedEnd)
+        let suppliedTag = packagedData.suffix(Self.tagLength)
+        let expectedTag = HMAC<SHA256>.authenticationCode(
+            for: authenticatedContent,
+            using: authenticationKey
+        )
+
+        guard suppliedTag.elementsEqual(expectedTag) else {
+            throw AESError.invalidCiphertextSize
+        }
+
+        let ivData = authenticatedContent.dropFirst().prefix(Self.ivLength)
+        let iv = try AESIV(Data(ivData))
+        let ciphertext = authenticatedContent.dropFirst(1 + Self.ivLength)
+        return try engine.decrypt(Data(ciphertext), mode: .ctr(iv: iv))
     }
 }

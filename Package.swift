@@ -27,11 +27,7 @@ let package = Package(
                 "ECB/aes_ecb.c"
             ],
             publicHeadersPath: "include",
-            cSettings: [
-                .unsafeFlags([
-                    "-O3"                       // Максимальный уровень оптимизации Clang
-                ])
-            ]
+            cSettings: []
         ),
         
         // 2. Базовые типы данных (SecureKey, AESIV, AESMode)
@@ -41,8 +37,7 @@ let package = Package(
             path: "Core",
             exclude: ["HardwareAES.swift"],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .unsafeFlags(["-O"]) // Гарантируем Release-оптимизацию для Swift-слоя
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         
@@ -53,8 +48,7 @@ let package = Package(
             path: "Modes/CTR",
             exclude: ["README.md"],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .unsafeFlags(["-O"])
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         
@@ -64,8 +58,7 @@ let package = Package(
             dependencies: ["HardwareAESCore", "HardwareAESASM"], // Исправлено: добавлена зависимость от ASM
             path: "Modes/ECB",
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .unsafeFlags(["-O"])
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         
@@ -86,8 +79,7 @@ let package = Package(
             ],
             sources: ["HardwareAES.swift"],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .unsafeFlags(["-O"])
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         
@@ -99,8 +91,7 @@ let package = Package(
             path: "Benchmark",
             exclude: ["main.swift"],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .unsafeFlags(["-O"])
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         
@@ -115,7 +106,7 @@ let package = Package(
                 "CorrectnessValidation.swift"
             ],
             sources: ["main.swift"],
-            swiftSettings: [.unsafeFlags(["-O"])]
+            swiftSettings: []
         ),
         
         .testTarget(

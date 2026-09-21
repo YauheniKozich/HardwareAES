@@ -26,6 +26,9 @@ extern "C" {
 // Returns: 0 on success, -1 on error
 int haes_aes128_init(uint8_t *ctx, const uint8_t *key);
 
+// Securely clears a memory region before it is released.
+void haes_secure_zero(void *ptr, size_t len);
+
 // C-side known-answer and counter-wrap self-tests.
 int haes_aes128_ctr_kat(void);
 int haes_aes128_ecb_kat(void);

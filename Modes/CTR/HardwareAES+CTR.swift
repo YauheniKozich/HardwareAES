@@ -2,6 +2,24 @@ import Foundation
 import HardwareAESCore
 import HardwareAESASM
 
+private final class AESContextStorage: @unchecked Sendable {
+    let pointer: UnsafeMutablePointer<UInt8>
+    let count = Int(HAES_AES128_CTX_BYTES_FULL)
+
+    init() throws {
+        pointer = .allocate(capacity: count)
+    }
+
+    deinit {
+        haes_secure_zero(pointer, count)
+        pointer.deallocate()
+    }
+
+    func withUnsafeBytes<T>(_ body: (UnsafeRawBufferPointer) throws -> T) rethrows -> T {
+        try body(UnsafeRawBufferPointer(start: pointer, count: count))
+    }
+}
+
 /// Hardware-accelerated AES encryption engine with CTR mode support.
 ///
 /// Uses ARMv8 Crypto Extensions for maximum hardware performance.
@@ -9,24 +27,25 @@ import HardwareAESASM
 public final class HardwareAESCTR: HardwareAESEngineProtocol, Sendable {
     // Контекст раундовых ключей иммутабелен. Класс является честным Sendable
     // без необходимости блокировок через DispatchQueue.
-    private let ctxData: Data
+    private let context: AESContextStorage
     
     /// Initializes a new AES engine with the provided key.
     public init(key: SecureKey) throws {
-        var ctx = Data(count: Int(HAES_AES128_CTX_BYTES_FULL))
-        
-        // Передаем указатель из SecureKey напрямую в Си, исключая утечку промежуточных копий Data
-        let status = ctx.withUnsafeMutableBytes { ctxBuf in
-            key.withUnsafeBytes { keyBuf in
-                let ctxPtr = ctxBuf.bindMemory(to: UInt8.self).baseAddress
-                let keyPtr = keyBuf.bindMemory(to: UInt8.self).baseAddress
-                guard let ctxPtr, let keyPtr else { return -1 }
-                return Int(haes_aes128_init(ctxPtr, keyPtr))
-            }
+        guard key.size == .bits128 else {
+            throw AESError.invalidKeyLength
         }
-        
+
+        let context = try AESContextStorage()
+
+        // Передаем указатель из SecureKey напрямую в Си, исключая промежуточную копию Data.
+        let status = key.withUnsafeBytes { keyBuf in
+            let keyPtr = keyBuf.bindMemory(to: UInt8.self).baseAddress
+            guard let keyPtr else { return -1 }
+            return Int(haes_aes128_init(context.pointer, keyPtr))
+        }
+
         guard status == 0 else { throw AESError.internalError }
-        self.ctxData = ctx
+        self.context = context
     }
     
     /// Encrypts plaintext data using CTR mode. (Thread-safe, non-blocking)
@@ -95,14 +114,30 @@ public final class HardwareAESCTR: HardwareAESEngineProtocol, Sendable {
     }
     
     // MARK: - Private Core Processing
-    
+
+    private func validateCounterCapacity(byteCount: Int, iv: Data) throws {
+        let counter = UInt64(iv[12]) << 24
+            | UInt64(iv[13]) << 16
+            | UInt64(iv[14]) << 8
+            | UInt64(iv[15])
+        let blockCount = (UInt64(byteCount) + 15) / 16
+        let availableBlocks = (UInt64(UInt32.max) - counter) + 1
+        guard blockCount <= availableBlocks else {
+            throw AESError.counterExhausted
+        }
+    }
+
     private func process(input: Data, iv: Data) throws -> Data {
+        guard iv.count == 16 else {
+            throw AESError.invalidIVLength
+        }
         guard input.count > 0 else { return Data() }
+        try validateCounterCapacity(byteCount: input.count, iv: iv)
 
         var output = Data(count: input.count)
 
         // Чтение иммутабельного контекста безопасно из любого количества потоков одновременно
-        let status = ctxData.withUnsafeBytes { ctxBuf in
+        let status = context.withUnsafeBytes { ctxBuf in
             input.withUnsafeBytes { inBuf in
                 output.withUnsafeMutableBytes { outBuf in
                     let ctxPtr = ctxBuf.bindMemory(to: UInt8.self).baseAddress!
@@ -133,12 +168,16 @@ public final class HardwareAESCTR: HardwareAESEngineProtocol, Sendable {
         buffer: UnsafeMutableRawBufferPointer,
         iv: Data
     ) throws {
+        guard iv.count == 16 else {
+            throw AESError.invalidIVLength
+        }
         guard buffer.count > 0 else { return }
+        try validateCounterCapacity(byteCount: buffer.count, iv: iv)
         guard let bufPtr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
             throw AESError.internalError
         }
 
-        let status = ctxData.withUnsafeBytes { ctxBuf -> Int in
+        let status = context.withUnsafeBytes { ctxBuf -> Int in
             iv.withUnsafeBytes { ivBuf -> Int in
                 guard let ctxPtr = ctxBuf.bindMemory(to: UInt8.self).baseAddress,
                       let ivPtr = ivBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
@@ -159,15 +198,19 @@ public final class HardwareAESCTR: HardwareAESEngineProtocol, Sendable {
         output: UnsafeMutableRawBufferPointer,
         iv: Data
     ) throws {
+        guard iv.count == 16 else {
+            throw AESError.invalidIVLength
+        }
         guard input.count == output.count else {
             throw AESError.bufferSizeMismatch
         }
         guard input.count > 0 else { return }
+        try validateCounterCapacity(byteCount: input.count, iv: iv)
         guard let inPtr = input.baseAddress?.assumingMemoryBound(to: UInt8.self),
               let outPtr = output.baseAddress?.assumingMemoryBound(to: UInt8.self)
         else { throw AESError.internalError }
 
-        let status = ctxData.withUnsafeBytes { ctxBuf -> Int in
+        let status = context.withUnsafeBytes { ctxBuf -> Int in
             iv.withUnsafeBytes { ivBuf -> Int in
                 guard let ctxPtr = ctxBuf.bindMemory(to: UInt8.self).baseAddress,
                       let ivPtr = ivBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
@@ -189,10 +232,16 @@ public final class HardwareAESCTRStream {
     private var counter: Data
     private var keystream = Data(count: 16)
     private var keystreamOffset = 16
+    private var remainingBlocks: UInt64
 
     public init(engine: HardwareAESCTR, iv: AESIV) {
         self.engine = engine
         self.counter = iv.data
+        let initialCounter = UInt64(iv.data[12]) << 24
+            | UInt64(iv.data[13]) << 16
+            | UInt64(iv.data[14]) << 8
+            | UInt64(iv.data[15])
+        self.remainingBlocks = (UInt64(UInt32.max) - initialCounter) + 1
     }
 
     /// Encrypts or decrypts the next segment of the stream.
@@ -200,16 +249,22 @@ public final class HardwareAESCTRStream {
         guard !input.isEmpty else { return Data() }
 
         var output = Data(count: input.count)
-        for index in input.indices {
+        var outputOffset = 0
+        for inputByte in input {
             if keystreamOffset == keystream.count {
+                guard remainingBlocks > 0 else {
+                    throw AESError.counterExhausted
+                }
                 keystream = try engine.encrypt(
                     Data(repeating: 0, count: 16),
                     mode: CTRMode(iv: AESIV(counter))
                 )
                 incrementCounter()
+                remainingBlocks -= 1
                 keystreamOffset = 0
             }
-            output[index] = input[index] ^ keystream[keystreamOffset]
+            output[outputOffset] = inputByte ^ keystream[keystreamOffset]
+            outputOffset += 1
             keystreamOffset += 1
         }
         return output

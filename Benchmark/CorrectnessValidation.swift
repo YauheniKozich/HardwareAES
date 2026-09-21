@@ -132,7 +132,8 @@ extension CryptoBenchmark {
     }
 
     private func validateInc32Overflow(key: Data, checks: inout Int) throws {
-        let plaintext = Data(repeating: 0, count: 16 * 10 + 7)
+        let boundaryPlaintext = Data(repeating: 0, count: 16 * 4)
+        let overflowPlaintext = Data(repeating: 0, count: 16 * 4 + 7)
         let overflowEngine = try HardwareAESCTR(key: SecureKey(key))
         let prefixes: [[UInt8]] = [
             Array(repeating: 0, count: 12),
@@ -140,31 +141,42 @@ extension CryptoBenchmark {
             [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98]
         ]
 
-        var firstIV = Data(repeating: 0, count: 16)
-        firstIV[12] = 0xff
-        firstIV[13] = 0xff
-        firstIV[14] = 0xff
-        firstIV[15] = 0xfc
         for prefix in prefixes {
-            let ivBeforeWrap = Data(prefix + [0xff, 0xff, 0xff, 0xfc])
-            let ivAfterWrap = Data(prefix + [0, 0, 0, 0])
-            let wrappedBlock = try overflowEngine.encrypt(
-                Data(repeating: 0, count: 16),
-                mode: CTRMode(iv: AESIV(ivAfterWrap))
+            let ivAtBoundary = Data(prefix + [0xff, 0xff, 0xff, 0xfc])
+            let run = try overflowEngine.encrypt(
+                boundaryPlaintext,
+                mode: CTRMode(iv: AESIV(ivAtBoundary))
             )
-            let run = try overflowEngine.encrypt(plaintext, mode: CTRMode(iv: AESIV(ivBeforeWrap)))
-            guard Data(run[64..<80]) == wrappedBlock else {
-                throw ValidationError("NIST inc32 overflow prefix")
+            let expected = try encryptWithCommonCrypto(
+                plaintext: boundaryPlaintext,
+                key: key,
+                iv: ivAtBoundary
+            )
+            guard run == expected else {
+                throw ValidationError("inc32 boundary prefix")
             }
-            checks += 1
+
+            do {
+                _ = try overflowEngine.encrypt(
+                    overflowPlaintext,
+                    mode: CTRMode(iv: AESIV(ivAtBoundary))
+                )
+                throw ValidationError("counter exhaustion was not rejected")
+            } catch AESError.counterExhausted {
+                // Expected: the fifth block would reuse the counter after wrap.
+            }
+            checks += 2
         }
 
-        let actual = try overflowEngine.encrypt(plaintext, mode: CTRMode(iv: AESIV(firstIV)))
-        let stream = HardwareAESCTRStream(engine: overflowEngine, iv: try AESIV(firstIV))
-        let split = 35
-        let streamed = try stream.update(Data(plaintext.prefix(split)))
-            + stream.update(Data(plaintext.dropFirst(split)))
-        guard streamed == actual else { throw ValidationError("stream inc32 overflow") }
+        let streamIV = Data([UInt8](repeating: 0, count: 12) + [0xff, 0xff, 0xff, 0xfc])
+        let stream = HardwareAESCTRStream(engine: overflowEngine, iv: try AESIV(streamIV))
+        _ = try stream.update(Data(boundaryPlaintext.prefix(35)))
+        do {
+            _ = try stream.update(Data(boundaryPlaintext.dropFirst(35)) + Data(repeating: 0, count: 7))
+            throw ValidationError("stream counter exhaustion was not rejected")
+        } catch AESError.counterExhausted {
+            // Expected: segmented updates cannot cross the counter boundary.
+        }
         checks += 1
     }
 

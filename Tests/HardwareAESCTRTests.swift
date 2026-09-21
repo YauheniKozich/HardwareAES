@@ -29,6 +29,37 @@ final class HardwareAESCTRTests: XCTestCase {
         let engine = try HardwareAESCTR(key: key)
         XCTAssertNotNil(engine)
     }
+
+    func testHardwareAESCTR_RejectsAES192AndAES256Keys() throws {
+        for length in [24, 32] {
+            let key = try SecureKey(Data(repeating: 0x42, count: length))
+            XCTAssertThrowsError(try HardwareAESCTR(key: key)) { error in
+                XCTAssertEqual(error as? AESError, .invalidKeyLength)
+            }
+        }
+    }
+
+    func testHardwareAESCTR_LowLevelAPIsRejectInvalidIVLengths() throws {
+        let key = try SecureKey(Data(repeating: 0x42, count: 16))
+        let engine = try HardwareAESCTR(key: key)
+
+        for length in [0, 1, 15, 17] {
+            let invalidIV = Data(repeating: 0, count: length)
+            var inPlace = Data(repeating: 0, count: 1)
+            XCTAssertThrowsError(try engine.encryptInPlace(buffer: inPlace.withUnsafeMutableBytes { $0 }, iv: invalidIV)) { error in
+                XCTAssertEqual(error as? AESError, .invalidIVLength)
+            }
+
+            var output = Data(count: 1)
+            XCTAssertThrowsError(try inPlace.withUnsafeBytes { input in
+                try output.withUnsafeMutableBytes { destination in
+                    try engine.encrypt(input: input, output: destination, iv: invalidIV)
+                }
+            }) { error in
+                XCTAssertEqual(error as? AESError, .invalidIVLength)
+            }
+        }
+    }
     
     func testHardwareAESCTR_EncryptDecrypt() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))

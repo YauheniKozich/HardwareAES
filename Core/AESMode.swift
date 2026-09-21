@@ -117,6 +117,7 @@ public enum AESError: Error, CustomNSError, Sendable {
     case internalError
     case memoryAllocationFailed
     case bufferSizeMismatch
+    case counterExhausted
     
     public static var errorDomain: String {
         "com.hardwareaes.engine.error"
@@ -132,6 +133,7 @@ public enum AESError: Error, CustomNSError, Sendable {
         case .memoryAllocationFailed: return 6
         case .invalidCiphertextSize: return 7
         case .bufferSizeMismatch: return 8
+        case .counterExhausted: return 9
         }
     }
     
@@ -152,6 +154,7 @@ public enum AESError: Error, CustomNSError, Sendable {
         case .memoryAllocationFailed: return "Failed to allocate secure memory"
         case .invalidCiphertextSize: return "Invalid ciphertext size"
         case .bufferSizeMismatch: return "Input and output buffer sizes differ"
+        case .counterExhausted: return "CTR counter space has been exhausted"
         }
     }
     
@@ -165,6 +168,7 @@ public enum AESError: Error, CustomNSError, Sendable {
         case .memoryAllocationFailed: return "Unable to allocate secure memory buffer"
         case .invalidCiphertextSize: return "The encrypted data package is missing header components or has an invalid block size"
         case .bufferSizeMismatch: return "CTR mode requires input.count == output.count"
+        case .counterExhausted: return "The CTR counter cannot be reused after its 32-bit space is exhausted"
         }
     }
 }

@@ -26,14 +26,10 @@ final class HardwareAESCoreTests: XCTestCase {
         }
     }
     
-    func testSecureKey_Zeroing() throws {
-        var key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let fingerprint = key.description
-        XCTAssertFalse(fingerprint.contains("00000000"))
-        
-        key.zero()
-        let zeroedFingerprint = key.description
-        XCTAssertTrue(zeroedFingerprint.contains("00000000"))
+    func testSecureKey_DescriptionDoesNotExposeKeyMaterial() throws {
+        let key = try SecureKey(Data(repeating: 0x42, count: 16))
+        XCTAssertEqual(key.description, "SecureKey(128-bit)")
+        XCTAssertFalse(key.description.contains("42"))
     }
     
     func testSecureKey_ConstantTimeEquality() throws {
@@ -104,8 +100,22 @@ final class HardwareAESCoreTests: XCTestCase {
     
     // MARK: - SecureFileVault Tests
     
-    func testSecureFileVault() async throws {
-        // This test requires a concrete implementation
-        // SecureFileVault is now in a separate module
+    func testSecureFileVault_AuthenticatesEmptyAndNonEmptyData() async throws {
+        let key = try SecureKey(Data(repeating: 0x42, count: 16))
+        let vault = SecureFileVault(engine: MockHardwareAESEngine(), key: key)
+
+        let emptyPackage = try await vault.encryptCTR(data: Data())
+        XCTAssertEqual(emptyPackage.count, 49)
+        let emptyPlaintext = try await vault.decryptCTR(data: emptyPackage)
+        XCTAssertEqual(emptyPlaintext, Data())
+
+        var tamperedPackage = try await vault.encryptCTR(data: Data([0x01, 0x02]))
+        tamperedPackage[17] ^= 0x01
+        do {
+            _ = try await vault.decryptCTR(data: tamperedPackage)
+            XCTFail("Tampered container must be rejected")
+        } catch {
+            XCTAssertEqual(error as? AESError, .invalidCiphertextSize)
+        }
     }
 }
