@@ -5,6 +5,23 @@ import CommonCrypto
 import HardwareAESASM
 @testable import HardwareAESCore
 @testable import HardwareAESCTR
+import HardwareAES
+
+private func encryptSynchronously(
+    _ engine: HardwareAES,
+    _ input: Data,
+    mode: AESMode
+) throws -> Data {
+    try engine.encrypt(input, mode: mode)
+}
+
+private func decryptSynchronously(
+    _ engine: HardwareAES,
+    _ input: Data,
+    mode: AESMode
+) throws -> Data {
+    try engine.decrypt(input, mode: mode)
+}
 
 final class HardwareAESCTRTests: XCTestCase {
     
@@ -32,8 +49,7 @@ final class HardwareAESCTRTests: XCTestCase {
 
     func testHardwareAESCTR_RejectsAES192AndAES256Keys() throws {
         for length in [24, 32] {
-            let key = try SecureKey(Data(repeating: 0x42, count: length))
-            XCTAssertThrowsError(try HardwareAESCTR(key: key)) { error in
+            XCTAssertThrowsError(try SecureKey(Data(repeating: 0x42, count: length))) { error in
                 XCTAssertEqual(error as? AESError, .invalidKeyLength)
             }
         }
@@ -125,6 +141,38 @@ final class HardwareAESCTRTests: XCTestCase {
         
         let decrypted = try await engine.decrypt(ciphertext, mode: mode)
         XCTAssertEqual(decrypted, plaintext)
+    }
+
+    func testHardwareAESFacadeSyncAndAsyncRoundTrip() async throws {
+        let key = try SecureKey(Data(repeating: 0x42, count: 16))
+        let engine = try HardwareAES(key: key)
+        let mode = AESMode.ctr(iv: try AESIV(Data(repeating: 0x24, count: 16)))
+        let plaintext = Data((0..<257).map { UInt8(truncatingIfNeeded: $0) })
+
+        let ciphertext = try encryptSynchronously(engine, plaintext, mode: mode)
+        let decrypted = try decryptSynchronously(engine, ciphertext, mode: mode)
+        XCTAssertEqual(decrypted, plaintext)
+
+        let asyncCiphertext = try await engine.encrypt(plaintext, mode: mode)
+        XCTAssertEqual(asyncCiphertext, ciphertext)
+        let asyncPlaintext = try await engine.decrypt(asyncCiphertext, mode: mode)
+        XCTAssertEqual(asyncPlaintext, plaintext)
+    }
+
+    func testAsyncCTRSerialOperationsPreserveOrdering() async throws {
+        let key = try SecureKey(Data(repeating: 0x42, count: 16))
+        let engine = try HardwareAESCTR(key: key)
+        let mode = try CTRMode(iv: Data(repeating: 0x01, count: 16))
+        let first = Data(repeating: 0x11, count: 31)
+        let second = Data(repeating: 0x22, count: 47)
+
+        let firstAsync = try await engine.encrypt(first, mode: mode)
+        let secondAsync = try await engine.encrypt(second, mode: mode)
+
+        let firstExpected = try await engine.encrypt(first, mode: mode)
+        let secondExpected = try await engine.encrypt(second, mode: mode)
+        XCTAssertEqual(firstAsync, firstExpected)
+        XCTAssertEqual(secondAsync, secondExpected)
     }
     
     func testHardwareAESCTR_AsyncProtocolConformance() async throws {
@@ -393,7 +441,6 @@ final class HardwareAESCTRTests: XCTestCase {
 
     func testCSideKnownAnswerTests() {
         XCTAssertEqual(haes_aes128_ctr_kat(), 1)
-        XCTAssertEqual(haes_aes128_ecb_kat(), 1)
         XCTAssertEqual(haes_aes128_ctr_overflow_test(), 1)
     }
 

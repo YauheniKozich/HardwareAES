@@ -31,9 +31,6 @@ extension CryptoBenchmark {
         do {
             guard haes_aes128_ctr_kat() == 1 else { throw ValidationError("NIST CTR KAT") }
             checks += 1
-            guard haes_aes128_ecb_kat() == 1 else { throw ValidationError("NIST ECB KAT") }
-            checks += 1
-
             let keyData = Data(repeating: 0x42, count: 16)
             let ivData = Data((0..<16).map(UInt8.init))
             let engine = try HardwareAESCTR(key: SecureKey(keyData))
@@ -156,28 +153,65 @@ extension CryptoBenchmark {
                 throw ValidationError("inc32 boundary prefix")
             }
 
-            do {
-                _ = try overflowEngine.encrypt(
-                    overflowPlaintext,
-                    mode: CTRMode(iv: AESIV(ivAtBoundary))
-                )
-                throw ValidationError("counter exhaustion was not rejected")
-            } catch AESError.counterExhausted {
-                // Expected: the fifth block would reuse the counter after wrap.
+            let wrapped = try overflowEngine.encrypt(
+                overflowPlaintext,
+                mode: CTRMode(iv: AESIV(ivAtBoundary))
+            )
+            let wrappedReference = try encryptCounterBlocksIndividually(
+                engine: overflowEngine,
+                plaintext: overflowPlaintext,
+                iv: ivAtBoundary
+            )
+            guard wrapped == wrappedReference else {
+                throw ValidationError("inc32 wrap")
             }
             checks += 2
         }
 
         let streamIV = Data([UInt8](repeating: 0, count: 12) + [0xff, 0xff, 0xff, 0xfc])
         let stream = HardwareAESCTRStream(engine: overflowEngine, iv: try AESIV(streamIV))
-        _ = try stream.update(Data(boundaryPlaintext.prefix(35)))
-        do {
-            _ = try stream.update(Data(boundaryPlaintext.dropFirst(35)) + Data(repeating: 0, count: 7))
-            throw ValidationError("stream counter exhaustion was not rejected")
-        } catch AESError.counterExhausted {
-            // Expected: segmented updates cannot cross the counter boundary.
+        let streamPrefix = try stream.update(Data(boundaryPlaintext.prefix(35)))
+        let streamRemainder = Data(boundaryPlaintext.dropFirst(35)) + Data(repeating: 0, count: 7)
+        let streamOutput = try stream.update(streamRemainder)
+        let streamReference = try overflowEngine.encrypt(
+            Data(boundaryPlaintext.prefix(35)) + streamRemainder,
+            mode: CTRMode(iv: AESIV(streamIV))
+        )
+        guard streamPrefix + streamOutput == streamReference else {
+            throw ValidationError("stream inc32 wrap")
         }
         checks += 1
+    }
+
+    private func encryptCounterBlocksIndividually(
+        engine: HardwareAESCTR,
+        plaintext: Data,
+        iv: Data
+    ) throws -> Data {
+        var result = Data()
+        let blockCount = (plaintext.count + 15) / 16
+        for block in 0..<blockCount {
+            let start = block * 16
+            let length = min(16, plaintext.count - start)
+            let blockIV = incrementInc32(iv, by: UInt32(block))
+            let input = Data(plaintext[start..<(start + length)])
+            result.append(try engine.encrypt(input, mode: CTRMode(iv: AESIV(blockIV))))
+        }
+        return result
+    }
+
+    private func incrementInc32(_ iv: Data, by blocks: UInt32) -> Data {
+        var result = iv
+        let lowWord = UInt32(result[12]) << 24
+            | UInt32(result[13]) << 16
+            | UInt32(result[14]) << 8
+            | UInt32(result[15])
+        let next = lowWord &+ blocks
+        result[12] = UInt8(truncatingIfNeeded: next >> 24)
+        result[13] = UInt8(truncatingIfNeeded: next >> 16)
+        result[14] = UInt8(truncatingIfNeeded: next >> 8)
+        result[15] = UInt8(truncatingIfNeeded: next)
+        return result
     }
 
     private func encryptWithCommonCrypto(plaintext: Data, key: Data, iv: Data) throws -> Data {

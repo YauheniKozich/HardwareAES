@@ -22,11 +22,11 @@ public final class SecureKey: Sendable, Equatable, CustomStringConvertible {
     // MARK: - Init / Deinit
 
     /// Creates a SecureKey from raw key bytes.
-    /// - Parameter bytes: Key data. Must be 16, 24, or 32 bytes.
+    /// - Parameter bytes: AES-128 key data. Must be exactly 16 bytes.
     /// - Throws: `AESError.invalidKeyLength` for unsupported lengths.
     ///           `AESError.memoryAllocationFailed` if allocation fails.
     public init(_ bytes: Data) throws {
-        guard [16, 24, 32].contains(bytes.count) else {
+        guard bytes.count == AESKeySize.bits128.rawValue else {
             throw AESError.invalidKeyLength
         }
 
@@ -58,12 +58,11 @@ public final class SecureKey: Sendable, Equatable, CustomStringConvertible {
     // MARK: - Public API
 
     public var size: AESKeySize {
-        // Значения AESKeySize.rawValue совпадают с числом байт (16/24/32)
+        // This implementation currently supports AES-128 only.
         AESKeySize(rawValue: buffer.count) ?? .bits128
     }
 
-    /// Копия ключа в виде `Data` для передачи в C-функции.
-    /// Используй `withUnsafeBytes` где возможно — он не создаёт копию.
+    /// Returns a copy of the key bytes. Prefer `withUnsafeBytes` when possible.
     public var keyData: Data {
         Data(buffer)
     }

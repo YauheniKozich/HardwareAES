@@ -54,6 +54,7 @@ int haes_aes128_ecb_encrypt(const uint8_t *in, uint8_t *out, size_t len, const u
 //   K'_0 = K_10, K'_r = InvMixColumns(K_r) for r=1..9, K'_10 = K_0
 int haes_aes128_ecb_decrypt(const uint8_t *in, uint8_t *out, size_t len, const uint8_t *ctx) {
     if (!in || !out || !ctx || len % AES_BLOCK != 0) return -1;
+    if (((uintptr_t)ctx & 15) != 0) return -1;
 
     // Смещение +176 указывает на начало раундовых ключей дешифрования
     const uint8x16_t *keys = (const uint8x16_t *)(ctx + 176);

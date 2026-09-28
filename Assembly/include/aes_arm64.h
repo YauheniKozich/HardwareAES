@@ -29,29 +29,13 @@ int haes_aes128_init(uint8_t *ctx, const uint8_t *key);
 // Securely clears a memory region before it is released.
 void haes_secure_zero(void *ptr, size_t len);
 
-// C-side known-answer and counter-wrap self-tests.
+// Compares equal-length secret tags without content-dependent early exit.
+// Callers must validate that both buffers contain `len` readable bytes.
+int haes_constant_time_equal(const uint8_t *lhs, const uint8_t *rhs, size_t len);
+
+// C-side CTR known-answer and counter-wrap self-tests.
 int haes_aes128_ctr_kat(void);
-int haes_aes128_ecb_kat(void);
 int haes_aes128_ctr_overflow_test(void);
-
-// ============================================================================
-// ECB Mode Functions (HardwareAESECB module)
-// ============================================================================
-
-// AES-128 ECB encryption
-// in: input buffer (must be multiple of 16 bytes)
-// out: output buffer (same size as input)
-// len: length in bytes (must be multiple of 16)
-// ctx: AES context initialized with haes_aes128_init
-// Buffer overlap contract: disjoint buffers and exact in-place are supported;
-// partial overlap is undefined behavior.
-// Returns: 0 on success, -1 on error
-int haes_aes128_ecb_encrypt(const uint8_t *in, uint8_t *out, size_t len, const uint8_t *ctx);
-
-// AES-128 ECB decryption
-// Buffer overlap contract: disjoint buffers and exact in-place are supported;
-// partial overlap is undefined behavior.
-int haes_aes128_ecb_decrypt(const uint8_t *in, uint8_t *out, size_t len, const uint8_t *ctx);
 
 // ============================================================================
 // CTR Mode Functions (HardwareAESCTR module)

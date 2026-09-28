@@ -1,7 +1,36 @@
 import Foundation
+import Darwin
 import HardwareAESBenchmark
 import HardwareAESCore
 import HardwareAESCTR
+
+let runCount: Int = {
+    guard let optionIndex = CommandLine.arguments.firstIndex(of: "--runs") else { return 3 }
+    guard optionIndex + 1 < CommandLine.arguments.count,
+          let value = Int(CommandLine.arguments[optionIndex + 1]),
+          value > 0
+    else {
+        FileHandle.standardError.write(Data("usage: HardwareAESBenchmarkCLI [--runs positive-count]\n".utf8))
+        exit(2)
+    }
+    return value
+}()
+
+func aggregate(_ runs: [[String: BenchmarkResult]]) -> [String: BenchmarkResult] {
+    guard let first = runs.first else { return [:] }
+    return first.mapValues { initial in
+        let runResults = runs.compactMap { $0[initial.name] ?? $0.values.first(where: {
+            $0.dataSize == initial.dataSize && $0.inPlace == initial.inPlace
+        }) }
+        return BenchmarkResult(
+            name: initial.name,
+            iterations: runResults.reduce(0) { $0 + $1.iterations },
+            dataSize: initial.dataSize,
+            inPlace: initial.inPlace,
+            samples: runResults.map(\.median)
+        )
+    }
+}
 
 print("")
 print("╔════════════════════════════════════════════════════════╗")
@@ -19,12 +48,16 @@ guard correctness.passed else {
     exit(1)
 }
 
-let cryptoResults = DispatchQueue.global(qos: .userInteractive).sync {
-    cryptoBenchmark.run()
+var hardwareRuns: [[String: BenchmarkResult]] = []
+var commonCryptoRuns: [[String: BenchmarkResult]] = []
+for runIndex in 1...runCount {
+    print("Benchmark run \(runIndex)/\(runCount)")
+    hardwareRuns.append(cryptoBenchmark.run())
+    commonCryptoRuns.append(cryptoBenchmark.runCommonCrypto())
 }
-let commonCryptoResults = DispatchQueue.global(qos: .userInteractive).sync {
-    cryptoBenchmark.runCommonCrypto()
-}
+let cryptoResults = aggregate(hardwareRuns)
+let commonCryptoResults = aggregate(commonCryptoRuns)
+print("Aggregation: median of \(runCount) per-run medians; warmup is excluded.")
 
 // ---------------------------------------------------------------------------
 // Detailed results
@@ -118,6 +151,3 @@ print("independent buffer ring. Any remaining in/out gap is an observation,")
 print("not evidence of a specific microarchitectural cause.")
 print("")
 print("✅ Benchmark execution complete!")
-print("")
-print("Нажмите [ENTER], чтобы закрыть это окно...")
-_ = readLine()

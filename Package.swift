@@ -10,9 +10,9 @@ let package = Package(
     products: [
         .library(name: "HardwareAESCore", targets: ["HardwareAESCore"]),
         .library(name: "HardwareAESCTR", targets: ["HardwareAESCTR"]),
-        .library(name: "HardwareAESECB", targets: ["HardwareAESECB"]),
+        .library(name: "HardwareAESAuthenticated", targets: ["HardwareAESAuthenticated"]),
         // Главный зонтичный фреймворк для интеграции в приложение
-        .library(name: "HardwareAES", targets: ["HardwareAESCore", "HardwareAESCTR", "HardwareAESECB", "HardwareAES"])
+        .library(name: "HardwareAES", targets: ["HardwareAESCore", "HardwareAESCTR", "HardwareAES"])
     ],
     targets: [
         // 1. Низкоуровневый Си-код с инлайн-ассемблером ARM NEON. Накатываем максимальный буст.
@@ -52,11 +52,20 @@ let package = Package(
             ]
         ),
         
-        // 4. Режим ECB (Также явно подключаем к Си-модулю)
+        // Internal AES block primitive used by CMAC and known-answer tests.
         .target(
-            name: "HardwareAESECB",
-            dependencies: ["HardwareAESCore", "HardwareAESASM"], // Исправлено: добавлена зависимость от ASM
-            path: "Modes/ECB",
+            name: "HardwareAESBlockCipher",
+            dependencies: ["HardwareAESCore", "HardwareAESASM"],
+            path: "Primitives",
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .target(
+            name: "HardwareAESAuthenticated",
+            dependencies: ["HardwareAESCore", "HardwareAESCTR", "HardwareAESBlockCipher", "HardwareAESASM"],
+            path: "Authenticated",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]
@@ -67,14 +76,12 @@ let package = Package(
             name: "HardwareAES",
             dependencies: [
                 "HardwareAESCore",
-                "HardwareAESCTR",
-                "HardwareAESECB"
+                "HardwareAESCTR"
             ],
             path: "Core",
             exclude: [
                 "AESMode.swift",
                 "HardwareAESEngineProtocol.swift",
-                "SecureFileVault.swift",
                 "SecureKey.swift"
             ],
             sources: ["HardwareAES.swift"],
@@ -113,24 +120,32 @@ let package = Package(
             name: "HardwareAESCoreTests",
             dependencies: ["HardwareAESCore"],
             path: "Tests",
-            exclude: ["HardwareAESCTRTests.swift", "HardwareAESECCTests.swift"],
+            exclude: ["HardwareAESCTRTests.swift", "HardwareAESBlockCipherTests.swift", "HardwareAESAuthenticatedTests.swift"],
             sources: ["HardwareAESCoreTests.swift"]
         ),
         
         .testTarget(
             name: "HardwareAESCTRTests",
-            dependencies: ["HardwareAESCore", "HardwareAESCTR", "HardwareAESASM"],
+            dependencies: ["HardwareAESCore", "HardwareAESCTR", "HardwareAESASM", "HardwareAES"],
             path: "Tests",
-            exclude: ["HardwareAESCoreTests.swift", "HardwareAESECCTests.swift"],
+            exclude: ["HardwareAESCoreTests.swift", "HardwareAESBlockCipherTests.swift", "HardwareAESAuthenticatedTests.swift"],
             sources: ["HardwareAESCTRTests.swift"]
         ),
         
         .testTarget(
-            name: "HardwareAESECCTests",
-            dependencies: ["HardwareAESCore", "HardwareAESCTR", "HardwareAESECB"],
+            name: "HardwareAESBlockCipherTests",
+            dependencies: ["HardwareAESCore", "HardwareAESBlockCipher"],
             path: "Tests",
-            exclude: ["HardwareAESCoreTests.swift", "HardwareAESCTRTests.swift"],
-            sources: ["HardwareAESECCTests.swift"]
+            exclude: ["HardwareAESCoreTests.swift", "HardwareAESCTRTests.swift", "HardwareAESAuthenticatedTests.swift"],
+            sources: ["HardwareAESBlockCipherTests.swift"]
+        ),
+
+        .testTarget(
+            name: "HardwareAESAuthenticatedTests",
+            dependencies: ["HardwareAESCore", "HardwareAESCTR", "HardwareAESAuthenticated"],
+            path: "Tests",
+            exclude: ["HardwareAESCoreTests.swift", "HardwareAESCTRTests.swift", "HardwareAESBlockCipherTests.swift"],
+            sources: ["HardwareAESAuthenticatedTests.swift"]
         )
     ]
 )

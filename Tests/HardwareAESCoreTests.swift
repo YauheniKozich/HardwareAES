@@ -3,26 +3,24 @@ import XCTest
 @testable import HardwareAESCore
 
 final class HardwareAESCoreTests: XCTestCase {
+
+    private struct SynchronousEngine: HardwareAESEngineProtocol {
+        func encrypt(_ plaintext: Data, mode: AESMode) throws -> Data { plaintext }
+        func decrypt(_ ciphertext: Data, mode: AESMode) throws -> Data { ciphertext }
+    }
     
     // MARK: - SecureKey Tests
     
-    func testSecureKey_ValidLengths() throws {
-        // 16 bytes (AES-128)
+    func testSecureKey_AcceptsAES128Only() throws {
         let key128 = try SecureKey(Data(repeating: 0x42, count: 16))
         XCTAssertEqual(key128.size, .bits128)
-        
-        // 24 bytes (AES-192)
-        let key192 = try SecureKey(Data(repeating: 0x42, count: 24))
-        XCTAssertEqual(key192.size, .bits192)
-        
-        // 32 bytes (AES-256)
-        let key256 = try SecureKey(Data(repeating: 0x42, count: 32))
-        XCTAssertEqual(key256.size, .bits256)
     }
     
     func testSecureKey_InvalidLength() {
-        XCTAssertThrowsError(try SecureKey(Data(repeating: 0x42, count: 8))) { error in
-            XCTAssertEqual(error as? AESError, .invalidKeyLength)
+        for length in [0, 8, 15, 24, 32] {
+            XCTAssertThrowsError(try SecureKey(Data(repeating: 0x42, count: length))) { error in
+                XCTAssertEqual(error as? AESError, .invalidKeyLength)
+            }
         }
     }
     
@@ -54,33 +52,6 @@ final class HardwareAESCoreTests: XCTestCase {
         }
     }
     
-    func testAESIV_GCMNonce() throws {
-        let nonce = try AESIV.gcmNonce(Data(repeating: 0x02, count: 12))
-        XCTAssertEqual(nonce.data.count, 16)
-    }
-    
-    func testAESIV_CCMNonce() throws {
-        let nonce = try AESIV.ccmNonce(Data(repeating: 0x03, count: 10))
-        // CCM nonce is padded to 16 bytes internally
-        XCTAssertEqual(nonce.data.count, 16)
-    }
-    
-    // MARK: - CCMTagsLength Tests
-    
-    func testCCMTagsLength() {
-        let tag64 = CCMTagsLength(8)
-        XCTAssertEqual(tag64, .bits64)
-        
-        let tag128 = CCMTagsLength(16)
-        XCTAssertEqual(tag128, .bits128)
-        
-        // Invalid: odd number
-        XCTAssertNil(CCMTagsLength(7))
-        
-        // Invalid: too small
-        XCTAssertNil(CCMTagsLength(2))
-    }
-    
     // MARK: - MockHardwareAESEngine Tests
     
     func testMockHardwareAESEngine() throws {
@@ -97,25 +68,40 @@ final class HardwareAESCoreTests: XCTestCase {
         XCTAssertEqual(mock.encryptCallCount, 1)
         XCTAssertEqual(mock.decryptCallCount, 0)
     }
-    
-    // MARK: - SecureFileVault Tests
-    
-    func testSecureFileVault_AuthenticatesEmptyAndNonEmptyData() async throws {
-        let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let vault = SecureFileVault(engine: MockHardwareAESEngine(), key: key)
 
-        let emptyPackage = try await vault.encryptCTR(data: Data())
-        XCTAssertEqual(emptyPackage.count, 49)
-        let emptyPlaintext = try await vault.decryptCTR(data: emptyPackage)
-        XCTAssertEqual(emptyPlaintext, Data())
+    func testSynchronousEngineUsesDefaultAsyncProtocolAdapters() async throws {
+        let engine = SynchronousEngine()
+        let payload = Data([0x01, 0x02, 0x03])
+        let mode = AESMode.ctr(iv: try AESIV(Data(repeating: 0, count: 16)))
 
-        var tamperedPackage = try await vault.encryptCTR(data: Data([0x01, 0x02]))
-        tamperedPackage[17] ^= 0x01
-        do {
-            _ = try await vault.decryptCTR(data: tamperedPackage)
-            XCTFail("Tampered container must be rejected")
-        } catch {
-            XCTAssertEqual(error as? AESError, .invalidCiphertextSize)
-        }
+        let encrypted = try await engine.encrypt(payload, mode: mode)
+        let decrypted = try await engine.decrypt(payload, mode: mode)
+        XCTAssertEqual(encrypted, payload)
+        XCTAssertEqual(decrypted, payload)
     }
+
+    func testMockCountersRemainConsistentForConcurrentCalls() throws {
+        let mock = MockHardwareAESEngine()
+        let mode = AESMode.ctr(iv: try AESIV(Data(repeating: 0, count: 16)))
+
+        DispatchQueue.concurrentPerform(iterations: 128) { _ in
+            _ = try? mock.encrypt(Data([0x01]), mode: mode)
+        }
+
+        XCTAssertEqual(mock.encryptCallCount, 128)
+        XCTAssertEqual(mock.decryptCallCount, 0)
+    }
+
+    func testMockHandlerCanChangeDuringConcurrentCalls() throws {
+        let mock = MockHardwareAESEngine()
+        let mode = AESMode.ctr(iv: try AESIV(Data(repeating: 0, count: 16)))
+
+        DispatchQueue.concurrentPerform(iterations: 64) { index in
+            mock.encryptHandler = { _, _ in Data([UInt8(truncatingIfNeeded: index)]) }
+            _ = try? mock.encrypt(Data(), mode: mode)
+        }
+
+        XCTAssertEqual(mock.encryptCallCount, 64)
+    }
+
 }

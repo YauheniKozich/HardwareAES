@@ -41,17 +41,6 @@ static const uint8_t ctrExpected[64] = {
     0x79, 0x21, 0x70, 0xa0, 0xf3, 0x00, 0x9c, 0xee
 };
 
-static const uint8_t ecbExpected[64] = {
-    0x3a, 0xd7, 0x7b, 0xb4, 0x0d, 0x7a, 0x36, 0x60,
-    0xa8, 0x9e, 0xca, 0xf3, 0x24, 0x66, 0xef, 0x97,
-    0xf5, 0xd3, 0xd5, 0x85, 0x03, 0xb9, 0x69, 0x9d,
-    0xe7, 0x85, 0x89, 0x5a, 0x96, 0xfd, 0xba, 0xaf,
-    0x43, 0xb1, 0xcd, 0x7f, 0x59, 0x8e, 0xce, 0x23,
-    0x88, 0x1b, 0x00, 0xe3, 0xed, 0x03, 0x06, 0x88,
-    0x7b, 0x0c, 0x78, 0x5e, 0x27, 0xe8, 0xad, 0x3f,
-    0x82, 0x23, 0x20, 0x71, 0x04, 0x72, 0x5d, 0xd4
-};
-
 int haes_aes128_ctr_kat(void) {
     uint8_t ctx[HAES_AES128_CTX_BYTES_FULL] HAES_ALIGN16;
     uint8_t ciphertext[64];
@@ -61,18 +50,6 @@ int haes_aes128_ctr_kat(void) {
     if (haes_aes128_ctr_xor(katPlaintext, ciphertext, sizeof(ciphertext), ctx, katIV) != 0) return 0;
     if (memcmp(ciphertext, ctrExpected, sizeof(ciphertext)) != 0) return 0;
     if (haes_aes128_ctr_xor(ciphertext, roundTrip, sizeof(roundTrip), ctx, katIV) != 0) return 0;
-    return memcmp(roundTrip, katPlaintext, sizeof(roundTrip)) == 0;
-}
-
-int haes_aes128_ecb_kat(void) {
-    uint8_t ctx[HAES_AES128_CTX_BYTES_FULL] HAES_ALIGN16;
-    uint8_t ciphertext[64];
-    uint8_t roundTrip[64];
-
-    if (haes_aes128_init(ctx, katKey) != 0) return 0;
-    if (haes_aes128_ecb_encrypt(katPlaintext, ciphertext, sizeof(ciphertext), ctx) != 0) return 0;
-    if (memcmp(ciphertext, ecbExpected, sizeof(ciphertext)) != 0) return 0;
-    if (haes_aes128_ecb_decrypt(ciphertext, roundTrip, sizeof(roundTrip), ctx) != 0) return 0;
     return memcmp(roundTrip, katPlaintext, sizeof(roundTrip)) == 0;
 }
 

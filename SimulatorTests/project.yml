@@ -1,0 +1,46 @@
+name: HardwareAESSimulatorTests
+options:
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    iOS: "15.0"
+packages:
+  HardwareAESEngine:
+    path: ${HAES_PACKAGE_PATH}
+targets:
+  TestHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: Host
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hardwareaes.simulatortesthost
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+  HardwareAESSimulatorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: TestHost
+      - package: HardwareAESEngine
+        product: HardwareAESCore
+      - package: HardwareAESEngine
+        product: HardwareAESCTR
+      - package: HardwareAESEngine
+        product: HardwareAESAuthenticated
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hardwareaes.simulatortests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TestHost.app/TestHost"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  HardwareAESSimulatorTests:
+    build:
+      targets:
+        HardwareAESSimulatorTests: all
+    test:
+      targets:
+        - HardwareAESSimulatorTests

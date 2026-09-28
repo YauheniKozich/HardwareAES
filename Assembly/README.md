@@ -16,22 +16,15 @@ Assembly/
 ├── CTR/
 │   └── aes_ctr.c              # CTR mode, 8-way interleaved
 ├── ECB/
-│   └── aes_ecb.c              # ECB mode, encrypt + decrypt
+│   └── aes_ecb.c              # Private AES block primitive for CMAC
 └── include/
-    └── aes_arm64.h            # Public C API
+    └── aes_arm64.h            # Public core/CTR C API; ECB is not declared
 ```
 
 ## API
 
 ```c
 int haes_aes128_init(uint8_t *ctx, const uint8_t *key);
-
-int haes_aes128_ecb_encrypt(
-    const uint8_t *in, uint8_t *out, size_t len, const uint8_t *ctx
-);
-int haes_aes128_ecb_decrypt(
-    const uint8_t *in, uint8_t *out, size_t len, const uint8_t *ctx
-);
 
 int haes_aes128_ctr_xor(
     const uint8_t *in, uint8_t *out, size_t len,
@@ -40,13 +33,13 @@ int haes_aes128_ctr_xor(
 ```
 
 The AES context must be 16-byte aligned. Input and output buffers do not need
-to be aligned. ECB input length must be a multiple of 16 bytes; CTR accepts
-arbitrary lengths, including zero.
+to be aligned. CTR accepts arbitrary lengths, including zero.
 
 For a zero-length operation, the function returns `0` after validating all
-pointers; a null pointer still returns `-1`. For ECB and CTR, disjoint buffers
-and exact in-place operation (`in == out`) are supported. Partial overlap is
-undefined behavior and must not be used.
+pointers; a null pointer still returns `-1`. For CTR, disjoint buffers and
+exact in-place operation (`in == out`) are supported. Partial overlap is
+undefined behavior and must not be used. The internal ECB block primitive is
+not declared in the public C header.
 
 The regular Swift CTR operation is stateless: each call starts at the IV
 provided by the caller. For a logical stream split across arbitrary chunk
@@ -100,7 +93,7 @@ The temporary key schedule is securely zeroed after initialization.
 - CTR uses an 8-way fast path, followed by 4-way and single-block paths.
 - Tail bytes are handled without padding.
 - C-side self-tests include the complete 64-byte (4-block) NIST SP 800-38A
-  CTR vector, the matching ECB KAT, and counter-wrap coverage.
+  CTR vector and counter-wrap coverage.
 - Swift tests cover randomized differential comparisons with CommonCrypto,
   unaligned buffers, exact in-place operation, tails, and segmented streams.
 - The public low-level contract also covers zero-length calls, 16-byte context
@@ -130,34 +123,40 @@ not source-level guarantees.
 ## Testing
 
 Run the package tests with `swift test`. The benchmark CLI also runs a
-correctness preflight covering the 4-block NIST CTR vector, ECB KAT,
+correctness preflight covering the 4-block NIST CTR vector,
 CommonCrypto differential checks, tails, in-place and unaligned buffers,
 segmented streams, and counter-wrap behavior.
 
 ## Performance
 
-The following median values are from a single `-c release` run on the author's
-MacBook Pro. The in-place path rotates across independent buffers. Repeated
+The following median values are from the `-c release` run captured on
+2026-09-28 on a MacBook Pro. Its correctness preflight passed 551 checks,
+including 256 randomized cases. The in-place path rotates across independent
+buffers. Repeated
 runs can vary by roughly ±5–10% with thermal state, power mode, background load,
 and CPU frequency.
 
 | Size | Out-of-place | In-place |
 | --- | ---: | ---: |
-| 256 B | 10137.33 MiB/s | 7473.69 MiB/s |
-| 1 KB | 14611.91 MiB/s | 13279.04 MiB/s |
-| 4 KB | 16801.08 MiB/s | 16025.64 MiB/s |
-| 16 KB | 16816.14 MiB/s | 16447.37 MiB/s |
-| 64 KB | 16703.79 MiB/s | 15873.02 MiB/s |
-| 1 MB | 16075.02 MiB/s | 16010.67 MiB/s |
-| 100 MB | 15749.37 MiB/s | 15893.72 MiB/s |
+| 256 B | 10790.75 MiB/s | 8217.92 MiB/s |
+| 1 KB | 15761.60 MiB/s | 13803.00 MiB/s |
+| 4 KB | 15703.52 MiB/s | 14880.95 MiB/s |
+| 16 KB | 16025.64 MiB/s | 15495.87 MiB/s |
+| 64 KB | 16094.42 MiB/s | 15706.81 MiB/s |
+| 256 KB | 16129.03 MiB/s | 15915.12 MiB/s |
+| 1 MB | 16085.79 MiB/s | 15915.12 MiB/s |
+| 4 MB | 15992.00 MiB/s | 15909.84 MiB/s |
+| 16 MB | 15932.29 MiB/s | 15776.50 MiB/s |
+| 64 MB | 15790.45 MiB/s | 15819.72 MiB/s |
+| 100 MB | 15584.82 MiB/s | 15884.26 MiB/s |
 
 *Note:* small-buffer operations are batched before timing, so these throughput
 values are not single-call `Time/op` latency measurements. The table is a
 single release run on one MacBook Pro, not a universal performance guarantee.
 
-Out-of-place remains faster at 256 B, 1 KB, and 4 KB even with the independent
-buffer ring. The ring experiment therefore does not support the hypothesis
-that immediate reuse of one buffer is the sole explanation for the gap.
+Out-of-place was faster through 16 MB in this run; in-place was slightly faster
+at 64 MB and 100 MB. These observations do not establish a microarchitectural
+cause.
 
 ### CommonCrypto Reference
 
@@ -166,39 +165,51 @@ The CLI also prints a separate CommonCrypto reference table. One
 `CCCryptorUpdate` calls. CommonCrypto may use the same Apple Silicon AES
 accelerator; these values are not a claim that either implementation is
 universally better.
-For small messages, HardwareAES leads the steady-state CommonCrypto reference
-by about +83% (1.83×) at 256 B and +30% (1.30×) at 1 KB. This is an API-level advantage that
-includes CommonCrypto validation and dispatch overhead; it is not evidence of
-faster AES rounds. At 4 KB HardwareAES measured 16801.08 MiB/s versus CommonCrypto's
-15243.90 MiB/s (about 10% higher). CommonCrypto was faster from 64 KB through
-100 MB in this run, by roughly 3–10%.
+In this run HardwareAES led CommonCrypto at 256 B, 1 KB, and 4 KB. CommonCrypto
+led from 16 KB through 100 MB. Results are API-level measurements from one
+machine, not evidence about AES round speed.
+
+| Size | HardwareAES | CommonCrypto |
+| --- | ---: | ---: |
+| 256 B | 10790.75 MiB/s | 5527.71 MiB/s |
+| 1 KB | 15761.60 MiB/s | 11534.20 MiB/s |
+| 4 KB | 15703.52 MiB/s | 15470.30 MiB/s |
+| 16 KB | 16025.64 MiB/s | 16592.92 MiB/s |
+| 64 KB | 16094.42 MiB/s | 17103.76 MiB/s |
+| 256 KB | 16129.03 MiB/s | 17241.38 MiB/s |
+| 1 MB | 16085.79 MiB/s | 17278.62 MiB/s |
+| 4 MB | 15992.00 MiB/s | 17284.84 MiB/s |
+| 16 MB | 15932.29 MiB/s | 17263.86 MiB/s |
+| 64 MB | 15790.45 MiB/s | 17010.91 MiB/s |
+| 100 MB | 15584.82 MiB/s | 17008.61 MiB/s |
 
 ## Methodology
 
 - Timer: `mach_absolute_time()` with cached `mach_timebase_info`.
 - Warmup: 3 iterations below 8 MB, 1 iteration at or above 8 MB.
 - Target duration: 0.5 seconds per size.
-- Iteration bounds: minimum 5, maximum 50,000.
+- Iteration bounds: minimum 5, maximum 50,000,000.
 - Batching: operations are grouped for small buffers before each timer read.
-- Statistics: median, minimum, and p95 time per operation over sorted batch
-  averages. Small-buffer samples are intentionally batched to amortize timer
-  overhead, so they are not single-call latency measurements.
+- Statistics: final throughput is based on the median of per-run median times.
+  Small-buffer samples are batched to amortize timer overhead, so these are not
+  single-call latency measurements.
 - Output validation: benchmark outputs are consumed after timing with a
   checksum to prevent dead-code elimination.
-- Execution QoS: benchmark runs on a `.userInteractive` queue after warm-up.
+- Implementations run sequentially in one process; OS scheduling and background
+  load are not controlled.
 - Buffer reuse: buffers are allocated once and reused between measurements.
-- Build: `swift run -c release HardwareAESBenchmarkCLI`.
+- Build: `swift run -c release HardwareAESBenchmarkCLI --runs 3`.
 - Run the benchmark as a separate CLI process, outside the test suite.
 - For peak reproducibility, let the machine idle for 30–60 seconds before running.
 
 ## Reproduce
 
 ```bash
-swift run -c release HardwareAESBenchmarkCLI
+./Scripts/run-release-benchmark.sh 3
 ```
 
 The CLI runs a correctness preflight before timing. It includes the complete
-4-block NIST CTR vector, the ECB KAT, deterministic randomized differential
+4-block NIST CTR vector, deterministic randomized differential
 checks against CommonCrypto, tail/boundary sizes, round trips, unaligned and
 in-place buffers, segmented stream updates, and NIST `inc32` counter-wrap
 checks. Performance results are not produced if this preflight fails. The

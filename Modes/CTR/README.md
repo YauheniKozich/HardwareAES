@@ -86,18 +86,18 @@ let decrypted = try await engine.decrypt(ciphertext, mode: mode)
 
 ```swift
 import HardwareAESCore
-import HardwareAESCTR
+import HardwareAESAuthenticated
 
 let key = try SecureKey(keyData)
-let engine = try HardwareAESCTR(key: key)
-let mode = try CTRMode(iv: try AESIV.random())
-
-// Create vault for high-level API
-let vault = SecureFileVault(engine: engine, mode: mode)
+let nonceStateURL = try FileManager.default
+    .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    .appendingPathComponent("vault-nonce-state")
+let nonces = try FileAESNonceSequence(stateFileURL: nonceStateURL)
+let vault = try SecureFileVault(key: key, nonceSequence: nonces)
 
 // Encrypt/decrypt with vault
-let encrypted = try await vault.encrypt(data: plaintext)
-let decrypted = try await vault.decrypt(data: encrypted)
+let encrypted = try await vault.encrypt(plaintext)
+let decrypted = try await vault.decrypt(encrypted)
 ```
 
 ## API Reference
@@ -178,7 +178,7 @@ These contracts apply to the underlying C API used by the CTR implementation:
 
 **Good Practices:**
 ```swift
-// ✅ Generate random IV for each encryption
+// ✅ Generate a fresh random IV for each standalone CTR encryption
 let iv = try AESIV.random()
 let mode = try CTRMode(iv: iv)
 
@@ -199,16 +199,20 @@ let iv = Data([0x01, 0x02, ...])  // NEVER do this!
 
 ⚠️ **Warning**: CTR mode provides **confidentiality only**, NOT authentication.
 
-An attacker can modify ciphertext without detection. For authenticated encryption:
-- Use **GCM mode** (recommended)
+An attacker can modify ciphertext without detection. For authenticated
+storage, use `SecureFileVault`, which authenticates its versioned container
+with AES-CMAC before decrypting. This package does not implement GCM.
 - Add HMAC separately
 - Use encrypt-then-MAC construction
 
 ### Key Management
 
 - Use `SecureKey` for automatic memory zeroing
-- Store keys in Secure Enclave when possible
-- Rotate keys periodically
+- Share one `AESNonceSequence` and one state file across vaults that use the same key
+- Exclude the nonce state file from backups; after restoring a backup, rotate the key
+- Use `RandomAESNonceSequence` only with an ephemeral key; its per-instance limit
+  does not persist across launches
+- Rotate the key when the sequence reaches its policy limit
 - Use a 16-byte AES-128 key and protect it with an appropriate key-management system
 
 ## Performance
@@ -232,7 +236,8 @@ Sequential:  [AES block 0] → wait → [AES block 1] → wait → ...
 
 ### Benchmarks on Apple Silicon
 
-Latest release sample:
+Latest release sample captured on 2026-09-28; the correctness preflight passed
+551 checks, including 256 randomized cases:
 
 ```bash
 swift run -c release HardwareAESBenchmarkCLI
@@ -242,13 +247,17 @@ Measured output from a release run on a MacBook Pro:
 
 | Data Size | Out-of-place | In-place |
 |-----------|-------------:|---------:|
-| 256 B | 10137.33 MiB/s | 7473.69 MiB/s |
-| 1 KB | 14611.91 MiB/s | 13279.04 MiB/s |
-| 4 KB | 16801.08 MiB/s | 16025.64 MiB/s |
-| 16 KB | 16816.14 MiB/s | 16447.37 MiB/s |
-| 64 KB | 16703.79 MiB/s | 15873.02 MiB/s |
-| 1 MB | 16075.02 MiB/s | 16010.67 MiB/s |
-| 100 MB | 15749.37 MiB/s | 15893.72 MiB/s |
+| 256 B | 10790.75 MiB/s | 8217.92 MiB/s |
+| 1 KB | 15761.60 MiB/s | 13803.00 MiB/s |
+| 4 KB | 15703.52 MiB/s | 14880.95 MiB/s |
+| 16 KB | 16025.64 MiB/s | 15495.87 MiB/s |
+| 64 KB | 16094.42 MiB/s | 15706.81 MiB/s |
+| 256 KB | 16129.03 MiB/s | 15915.12 MiB/s |
+| 1 MB | 16085.79 MiB/s | 15915.12 MiB/s |
+| 4 MB | 15992.00 MiB/s | 15909.84 MiB/s |
+| 16 MB | 15932.29 MiB/s | 15776.50 MiB/s |
+| 64 MB | 15790.45 MiB/s | 15819.72 MiB/s |
+| 100 MB | 15584.82 MiB/s | 15884.26 MiB/s |
 
 *Note:* small-buffer operations are batched before timing, so these throughput
 values are not single-call `Time/op` latency measurements. This table is from a
@@ -257,6 +266,8 @@ single release run on one MacBook Pro and is not a universal performance claim.
 These are median values from a single release run, not guaranteed performance
 figures. Repeated runs can vary by roughly ±5–10% with device, OS version,
 thermal state, power mode, background load, and CPU frequency. See `Assembly/README.md` for the benchmark methodology and caveats.
+The root README contains the current three-run Release snapshot and the
+reproducible command.
 
 **Performance note:**
 - Small inputs often show the highest apparent throughput because the benchmark overhead is amortized differently across sizes.

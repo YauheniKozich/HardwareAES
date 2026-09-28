@@ -10,7 +10,7 @@ import HardwareAESCore
 /// - Random access to encrypted blocks
 ///
 /// - Important: CTR mode provides confidentiality but NOT authentication.
-///              Consider using GCM mode if you need authentication.
+///              Use `SecureFileVault` when authenticated storage is required.
 public struct CTRMode: Equatable, Sendable {
     /// Initialization vector (nonce) - must be unique for each encryption
     public let iv: AESIV

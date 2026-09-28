@@ -12,8 +12,9 @@ import HardwareAESCTR
 /// - Random access to encrypted blocks
 ///
 /// ## Thread Safety
-/// This class is thread-safe. All operations are serialized through the
-/// underlying CTR engine.
+/// This class is thread-safe for independent calls. The immutable AES key
+/// context permits concurrent operations; callers must not access the same
+/// mutable input/output buffer concurrently.
 ///
 /// ## Example
 /// ```swift
@@ -29,19 +30,17 @@ import HardwareAESCTR
 /// ```
 ///
 /// - Important: CTR mode provides confidentiality but NOT authentication.
-///              For authenticated encryption, consider using GCM mode (future).
-public final class HardwareAES: HardwareAESEngineProtocol, @unchecked Sendable {
+///              Use `SecureFileVault` for authenticated containers.
+public final class HardwareAES: HardwareAESEngineProtocol, Sendable {
     private let ctrEngine: HardwareAESCTR
-    private let queue: DispatchQueue
 
     /// Initializes a new AES engine with CTR mode support.
     ///
-    /// - Parameter key: A `SecureKey` instance containing a 16, 24, or 32-byte AES key.
+    /// - Parameter key: A `SecureKey` instance containing exactly 16 bytes.
     /// - Throws: `AESError.invalidKeyLength` if the key length is not valid.
     ///           `AESError.memoryAllocationFailed` if context allocation fails.
     public init(key: SecureKey) throws {
         self.ctrEngine = try HardwareAESCTR(key: key)
-        self.queue = DispatchQueue(label: "com.hardwareaes.facade", qos: .userInitiated)
     }
 
     /// Encrypts plaintext data using CTR mode.
@@ -55,9 +54,7 @@ public final class HardwareAES: HardwareAESEngineProtocol, @unchecked Sendable {
     /// - Throws: `AESError.unsupportedMode` if mode is not CTR,
     ///           `AESError` if encryption fails.
     public func encrypt(_ plaintext: Data, mode: AESMode) throws -> Data {
-        try queue.sync {
-            try encryptOnQueue(plaintext, mode: mode)
-        }
+        try encryptWithCTR(plaintext, mode: mode)
     }
 
     /// Decrypts ciphertext data using CTR mode.
@@ -71,45 +68,19 @@ public final class HardwareAES: HardwareAESEngineProtocol, @unchecked Sendable {
     /// - Throws: `AESError.unsupportedMode` if mode is not CTR,
     ///           `AESError` if decryption fails.
     public func decrypt(_ ciphertext: Data, mode: AESMode) throws -> Data {
-        try queue.sync {
-            try decryptOnQueue(ciphertext, mode: mode)
-        }
+        try decryptWithCTR(ciphertext, mode: mode)
     }
     
     /// Encrypts plaintext data using CTR mode asynchronously.
     public func encrypt(_ plaintext: Data, mode: AESMode) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async { [weak self] in
-                do {
-                    guard let self else {
-                        continuation.resume(throwing: AESError.internalError)
-                        return
-                    }
-                    let result = try self.encryptOnQueue(plaintext, mode: mode)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        guard case .ctr(let iv) = mode else { throw AESError.unsupportedMode }
+        return try await ctrEngine.encrypt(plaintext, mode: CTRMode(iv: iv))
     }
     
     /// Decrypts ciphertext data using CTR mode asynchronously.
     public func decrypt(_ ciphertext: Data, mode: AESMode) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async { [weak self] in
-                do {
-                    guard let self else {
-                        continuation.resume(throwing: AESError.internalError)
-                        return
-                    }
-                    let result = try self.decryptOnQueue(ciphertext, mode: mode)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        guard case .ctr(let iv) = mode else { throw AESError.unsupportedMode }
+        return try await ctrEngine.decrypt(ciphertext, mode: CTRMode(iv: iv))
     }
 
     /// Runs NIST SP 800-38A F.5.1 CTR validation test for AES-128.
@@ -122,23 +93,23 @@ public final class HardwareAES: HardwareAESEngineProtocol, @unchecked Sendable {
         HardwareAESCTR.runNISTSelfTest()
     }
 
-    private func encryptOnQueue(_ plaintext: Data, mode: AESMode) throws -> Data {
+    private func encryptWithCTR(_ plaintext: Data, mode: AESMode) throws -> Data {
         guard case .ctr(let iv) = mode else {
             throw AESError.unsupportedMode
         }
         return try ctrEngine.encrypt(plaintext, mode: CTRMode(iv: iv))
     }
 
-    private func decryptOnQueue(_ ciphertext: Data, mode: AESMode) throws -> Data {
+    private func decryptWithCTR(_ ciphertext: Data, mode: AESMode) throws -> Data {
         guard case .ctr(let iv) = mode else {
             throw AESError.unsupportedMode
         }
         return try ctrEngine.decrypt(ciphertext, mode: CTRMode(iv: iv))
     }
 
-    // MARK: - Alloc-Free API (bypasses queue.sync)
+    // MARK: - Alloc-Free API
 
-    /// In-place CTR. Low-level; caller manages thread safety.
+    /// In-place CTR. The caller owns exclusive access to `buffer` for this call.
     public func encryptInPlace(
         _ buffer: inout Data,
         mode: AESMode
@@ -151,7 +122,8 @@ public final class HardwareAES: HardwareAESEngineProtocol, @unchecked Sendable {
         }
     }
 
-    /// Out-of-place CTR without allocation. Low-level; caller manages thread safety.
+    /// Out-of-place CTR without allocation. The caller owns exclusive access to
+    /// both buffers and ensures they do not overlap for this call.
     public func encrypt(
         input: UnsafeRawBufferPointer,
         output: UnsafeMutableRawBufferPointer,
@@ -163,14 +135,3 @@ public final class HardwareAES: HardwareAESEngineProtocol, @unchecked Sendable {
         try ctrEngine.encrypt(input: input, output: output, iv: iv.data)
     }
 }
-
-// MARK: - Thread Safety Documentation
-
-/// ## Concurrency
-///
-/// This class uses `@unchecked Sendable` because:
-/// 1. `ctrEngine` is immutable after initialization and internally thread-safe
-/// 2. All cryptographic operations are serialized by the underlying engine
-/// 3. No shared mutable state between instances
-///
-/// - Warning: Do not modify the engine after initialization.

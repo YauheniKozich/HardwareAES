@@ -1,14 +1,13 @@
 import Foundation
 import XCTest
 @testable import HardwareAESCore
-@testable import HardwareAESCTR
-@testable import HardwareAESECB
+@testable import HardwareAESBlockCipher
 
-final class HardwareAESECCTests: XCTestCase {
+final class HardwareAESBlockCipherTests: XCTestCase {
 
     // MARK: - NIST SP 800-38A F.1.1 AES-128-ECB Test Vector
 
-    func testHardwareAESECB_NIST() throws {
+    func testAESBlockCipher_NIST() throws {
         // NIST SP 800-38A F.1.1 — AES-128-ECB
         let keyData = Data([
             0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,
@@ -24,95 +23,94 @@ final class HardwareAESECCTests: XCTestCase {
         ])
 
         let key = try SecureKey(keyData)
-        let engine = try HardwareAESECB(key: key)
-        let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
+        let engine = try AESBlockCipher(key: key)
+        let ciphertext = try engine.encrypt(plaintext)
 
         XCTAssertEqual(ciphertext, expected, "NIST AES-128-ECB test vector mismatch")
     }
 
     // MARK: - Round-Trip Tests
 
-    func testHardwareAESECB_RoundTrip() throws {
+    func testAESBlockCipher_BasicRoundTrip() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
 
         let plaintext = Data(repeating: 0x41, count: 64)
 
-        let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
+        let ciphertext = try engine.encrypt(plaintext)
         XCTAssertNotEqual(ciphertext, plaintext)
 
-        let decrypted = try engine.decrypt(ciphertext, mode: .ecb)
+        let decrypted = try engine.decrypt(ciphertext)
         XCTAssertEqual(decrypted, plaintext)
     }
 
-    func testHardwareAESECB_SingleBlock() throws {
+    func testAESBlockCipher_SingleBlock() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
 
         let plaintext = Data(repeating: 0x55, count: 16)
 
-        let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
-        let decrypted = try engine.decrypt(ciphertext, mode: .ecb)
+        let ciphertext = try engine.encrypt(plaintext)
+        let decrypted = try engine.decrypt(ciphertext)
         XCTAssertEqual(decrypted, plaintext)
     }
 
-    func testHardwareAESECB_MultipleBlocks() throws {
+    func testAESBlockCipher_MultipleBlocks() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
 
         let sizes = [32, 48, 64, 128, 256, 1024]
         for size in sizes {
             let plaintext = Data(repeating: UInt8(size % 256), count: size)
-            let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
-            let decrypted = try engine.decrypt(ciphertext, mode: .ecb)
+            let ciphertext = try engine.encrypt(plaintext)
+            let decrypted = try engine.decrypt(ciphertext)
             XCTAssertEqual(decrypted, plaintext, "Round-trip failed for \(size) bytes")
         }
     }
 
-    func testHardwareAESECB_InvalidLength() throws {
+    func testAESBlockCipher_InvalidLength() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
 
         // Non-multiple of 16 should fail
         let plaintext = Data(repeating: 0x41, count: 17)
-        XCTAssertThrowsError(try engine.encrypt(plaintext, mode: .ecb))
+        XCTAssertThrowsError(try engine.encrypt(plaintext))
     }
 
     // MARK: - Async Tests
 
-    func testHardwareAESECB_AsyncRoundTrip() async throws {
+    func testAESBlockCipher_RoundTrip() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
 
         let plaintext = Data(repeating: 0x41, count: 64)
 
-        let ciphertext = try await engine.encrypt(plaintext, mode: .ecb)
-        let decrypted = try await engine.decrypt(ciphertext, mode: .ecb)
+        let ciphertext = try engine.encrypt(plaintext)
+        let decrypted = try engine.decrypt(ciphertext)
         XCTAssertEqual(decrypted, plaintext)
     }
 
-    // MARK: - Protocol Conformance
+    // MARK: - Block Primitive Tests
 
-    func testHardwareAESECB_ProtocolConformance() throws {
+    func testAESBlockCipher_RoundTripAcrossMultipleBlocks() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine: any HardwareAESEngineProtocol = try HardwareAESECB(key: key)
-
+        let engine = try AESBlockCipher(key: key)
         let plaintext = Data(repeating: 0x41, count: 32)
-        let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
-        let decrypted = try engine.decrypt(ciphertext, mode: .ecb)
+        let ciphertext = try engine.encrypt(plaintext)
+        let decrypted = try engine.decrypt(ciphertext)
         XCTAssertEqual(decrypted, plaintext)
     }
 
     // MARK: - Identical Blocks (ECB weakness demo)
 
-    func testHardwareAESECB_IdenticalBlocksProduceIdenticalCiphertext() throws {
+    func testAESBlockCipher_IdenticalBlocksProduceIdenticalCiphertext() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
 
         // Two identical blocks
         let plaintext = Data(repeating: 0x41, count: 32)
 
-        let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
+        let ciphertext = try engine.encrypt(plaintext)
 
         // In ECB, first 16 bytes of ciphertext should equal second 16 bytes
         let block1 = ciphertext.prefix(16)
@@ -122,13 +120,13 @@ final class HardwareAESECCTests: XCTestCase {
 
     // MARK: - Performance
 
-    func testPerformance_ECBEncryption() throws {
+    func testPerformance_AESBlockCipherEncryption() throws {
         let key = try SecureKey(Data(repeating: 0x42, count: 16))
-        let engine = try HardwareAESECB(key: key)
+        let engine = try AESBlockCipher(key: key)
         let plaintext = Data(repeating: 0x41, count: 1024 * 1024)
 
         measure {
-            _ = try? engine.encrypt(plaintext, mode: .ecb)
+            _ = try? engine.encrypt(plaintext)
         }
     }
 }

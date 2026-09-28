@@ -15,27 +15,12 @@ HardwareAES Engine is a hardware-accelerated AES-128 encryption library for iOS 
 
 ```
 HardwareAESEngine/
-├── Core/                    # Basic types and protocols (always included)
-│   ├── AESMode.swift        # AES modes and AESIV value type
-│   ├── SecureKey.swift      # Secure key wrapper
-│   ├── HardwareAESEngineProtocol.swift  # Protocol for DI
-│   ├── HardwareAES.swift    # Full-library facade
-│   └── SecureFileVault.swift # High-level encryption API
-│
-├── Modes/
-│   ├── CTR/                 # CTR mode (stable, production-ready)
-│   │   ├── CTRMode.swift
-│   │   └── HardwareAES+CTR.swift  # Includes HardwareAESCTRStream
-│   │
-│   └── ECB/                 # ECB mode (experimental, not recommended)
-│       ├── ECBMode.swift
-│       └── HardwareAES+ECB.swift
-│
-├── Assembly/                # Low-level C/Assembly implementation
-└── Tests/                   # Unit tests
-    ├── HardwareAESCoreTests.swift
-    ├── HardwareAESCTRTests.swift
-    └── HardwareAESECCTests.swift
+├── Core/                    # Public key, mode, and engine contracts
+├── Modes/CTR/               # Public CTR engine and stateful stream
+├── Primitives/              # Package-only AES block primitive for CMAC
+├── Authenticated/           # Versioned authenticated container and nonce providers
+├── Assembly/                # Low-level C/ARM Crypto Extensions implementation
+└── Tests/                   # Core, CTR, block primitive, and container tests
 ```
 
 ## Modules
@@ -62,20 +47,28 @@ let mode = try CTRMode(iv: try AESIV.random())
 let ciphertext = try engine.encrypt(plaintext, mode: mode)
 ```
 
-### HardwareAESECB (Experimental)
-ECB mode implementation - **NOT recommended for production**.
+### HardwareAESAuthenticated
+Authenticated versioned containers backed by AES-CTR and AES-CMAC.
 
 ```swift
+import Foundation
 import HardwareAESCore
-import HardwareAESECB
+import HardwareAESAuthenticated
 
-let key = try SecureKey(keyData)
-let engine = try HardwareAESECB(key: key)
-let ciphertext = try engine.encrypt(plaintext, mode: .ecb)
+let nonceStateURL = try FileManager.default
+    .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    .appendingPathComponent("vault-nonce-state")
+let nonces = try FileAESNonceSequence(stateFileURL: nonceStateURL)
+let vault = try SecureFileVault(key: SecureKey(keyData), nonceSequence: nonces)
+let package = try await vault.encrypt(plaintext)
 ```
 
-### HardwareAES (Full Library)
-All modes included.
+Use a file in the app's Application Support directory for `nonceStateURL`.
+Keep one state file per key, exclude it from backups, and rotate the key if a
+backup containing an earlier copy of the state is restored.
+
+### HardwareAES
+The unified facade for the implemented CTR mode.
 
 ```swift
 import HardwareAES
@@ -86,30 +79,26 @@ import HardwareAES
 | Mode | Status | NIST Tests | Round-Trip | Production Ready |
 |------|--------|------------|------------|------------------|
 | CTR  | ✅ Stable | ✅ 4-block NIST vector | ✅ Works | ✅ Yes |
-| ECB  | ✅ Working | ✅ KAT | ✅ Works | ⚠️ Not recommended |
+| Authenticated container | ✅ AES-CMAC + CTR | ✅ RFC 4493 CMAC KAT | ✅ Tamper rejection | ✅ Use for stored data |
+| AES block primitive | Package-only implementation detail used by CMAC; no ECB API is exported |
 
 ## Security Considerations
 
 ### CTR Mode
 - Provides confidentiality only (no authentication)
 - Must use unique IV for each encryption
-- Consider using GCM mode if you need authentication
+- Use `SecureFileVault` when authentication is required
 
-### ECB Mode
-- **⚠️ Cryptographically insecure for most applications**
-- Identical plaintext blocks produce identical ciphertext blocks
-- Patterns in plaintext are visible in ciphertext
-- Only use for:
-  - Testing against known test vectors
-  - Interoperability with legacy systems
-  - Educational purposes
+### AES block primitive
+The package uses a package-only AES block primitive to implement CMAC and run
+known-answer tests. It is not a public encryption mode or package product.
 
 ## Low-Level Contracts
 
 - The AES context must be 16-byte aligned; input and output buffers do not
   need to be aligned.
-- ECB requires a length that is a multiple of 16 bytes; CTR accepts arbitrary
-  lengths, including zero.
+- The internal block primitive requires a length that is a multiple of 16 bytes;
+  CTR accepts arbitrary lengths, including zero.
 - CTR uses NIST `inc32`: only the low 32-bit word increments in big-endian order;
   the 96-bit prefix is preserved and the low word wraps modulo 2^32.
 - A zero-length call returns success after pointer validation; null pointers
@@ -130,35 +119,38 @@ swift test
 Run specific mode tests:
 ```bash
 swift test --filter HardwareAESCTRTests
-swift test --filter HardwareAESECCTests
+swift test --filter HardwareAESBlockCipherTests
 ```
 
 ## Performance
 
 The CTR benchmark uses an 8-way fast path with 4-way and single-block tail
-handling. The following median values are from a single release run and can vary by
-roughly ±5–10% with device, thermal state, power mode, background load, and
-build configuration.
+handling. The following median values are from the release run captured on
+2026-09-28; its correctness preflight passed 551 checks, including 256
+randomized cases. Results can vary by roughly ±5–10% with device, thermal state,
+power mode, background load, and build configuration.
 
 | Size | Out-of-place | In-place |
 | --- | ---: | ---: |
-| 256 B | 10137.33 MiB/s | 7473.69 MiB/s |
-| 1 KB | 14611.91 MiB/s | 13279.04 MiB/s |
-| 4 KB | 16801.08 MiB/s | 16025.64 MiB/s |
-| 16 KB | 16816.14 MiB/s | 16447.37 MiB/s |
-| 64 KB | 16703.79 MiB/s | 15873.02 MiB/s |
-| 1 MB | 16075.02 MiB/s | 16010.67 MiB/s |
-| 100 MB | 15749.37 MiB/s | 15893.72 MiB/s |
+| 256 B | 10790.75 MiB/s | 8217.92 MiB/s |
+| 1 KB | 15761.60 MiB/s | 13803.00 MiB/s |
+| 4 KB | 15703.52 MiB/s | 14880.95 MiB/s |
+| 16 KB | 16025.64 MiB/s | 15495.87 MiB/s |
+| 64 KB | 16094.42 MiB/s | 15706.81 MiB/s |
+| 256 KB | 16129.03 MiB/s | 15915.12 MiB/s |
+| 1 MB | 16085.79 MiB/s | 15915.12 MiB/s |
+| 4 MB | 15992.00 MiB/s | 15909.84 MiB/s |
+| 16 MB | 15932.29 MiB/s | 15776.50 MiB/s |
+| 64 MB | 15790.45 MiB/s | 15819.72 MiB/s |
+| 100 MB | 15584.82 MiB/s | 15884.26 MiB/s |
 
 *Note:* small-buffer operations are batched before timing, so these throughput
 values are not single-call `Time/op` latency measurements. This table is from a
 single release run on one MacBook Pro and is not a universal performance claim.
 
-The benchmark now rotates in-place work across an independent buffer ring.
-Out-of-place remains faster at 256 B, 1 KB, and 4 KB; the ring experiment does
-not support immediate reuse of one buffer as the sole explanation. Any
-remaining in/out difference is a measured result, not proof of a particular
-cache or store-to-load forwarding mechanism.
+The benchmark rotates in-place work across an independent buffer ring. In this
+run, out-of-place was faster through 16 MB; in-place was slightly faster at
+64 MB and 100 MB. These observations do not establish a microarchitectural cause.
 
 The CLI also prints a separate CommonCrypto reference table. One cryptor is
 created outside timing and reused for steady-state update calls. CommonCrypto
@@ -167,20 +159,21 @@ reference measurement rather than a universal faster/slower claim.
 For small messages, the observed difference also includes CommonCrypto's
 per-call validation and dispatch overhead; it does not demonstrate faster AES
 round execution.
-In this single release run HardwareAES led CommonCrypto by about +83% (1.83×) at 256 B and +30% (1.30×) at 1 KB,
-was about 10% faster at 4 KB, and trailed CommonCrypto by roughly 3–10%
-from 64 KB through 100 MB.
+In this run HardwareAES led CommonCrypto at 256 B, 1 KB, and 4 KB. CommonCrypto
+led from 16 KB through 100 MB. Results are API-level measurements from one
+machine.
 
 Reproduce with:
 
 ```bash
-swift run -c release HardwareAESBenchmarkCLI
+./Scripts/run-release-benchmark.sh 3
 ```
 
-The benchmark uses `mach_absolute_time()`, cached timebase conversion,
-buffer reuse, 3 warmup iterations below 8 MB, 1 warmup iteration at or above
-8 MB, and a 0.5 second target duration per size. Run it as a separate CLI
-process after letting the machine idle for 30–60 seconds. Thermal state,
+The script records OS, device/SoC, Swift compiler, and SDK metadata. The CLI
+uses `mach_absolute_time()`, cached timebase conversion, buffer reuse, 3 warmup
+iterations below 8 MB, 1 warmup iteration at or above 8 MB, a 0.5 second target
+duration per size, and the median of 3 run medians. Run it after letting the
+machine idle for 30–60 seconds. Thermal state,
 power mode, background load, and CPU frequency affect peak measurements.
 
 ## License

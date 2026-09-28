@@ -16,7 +16,13 @@ public struct BenchmarkResult: CustomStringConvertible {
     /// Для мелких размеров это уже время, нормированное на batchSize.
     public let samples: [Double]
 
-    public var median: Double { samples[samples.count / 2] }
+    public var median: Double {
+        let middle = samples.count / 2
+        if samples.count.isMultiple(of: 2) {
+            return (samples[middle - 1] + samples[middle]) / 2
+        }
+        return samples[middle]
+    }
     public var minTime: Double { samples.first! }
     public var p95: Double    { samples[Int(Double(samples.count) * 0.95)] }
     public var mean: Double   { samples.reduce(0, +) / Double(samples.count) }
@@ -132,8 +138,10 @@ public struct CryptoBenchmark {
     private let minIterations: Int
 
     public init(targetSeconds: Double = 0.5,
-                maxIterations: Int = 50_000,
+                maxIterations: Int = 50_000_000,
                 minIterations: Int = 5) {
+        precondition(targetSeconds.isFinite && targetSeconds > 0)
+        precondition(minIterations > 0 && maxIterations >= minIterations)
         self.targetSeconds = targetSeconds
         self.maxIterations = maxIterations
         self.minIterations = minIterations
@@ -158,8 +166,8 @@ public struct CryptoBenchmark {
 
     /// Measures CommonCrypto as an independent API reference.
     ///
-    /// Each operation includes cryptor creation and update, so this is an API
-    /// reference rather than a pure AES-core comparison.
+    /// Each run reuses one cryptor and times steady-state update calls. This is
+    /// an API reference rather than a pure AES-core comparison.
     public func runCommonCrypto(
         sizes: [(String, Int)] = CryptoBenchmark.defaultSizes
     ) -> [String: BenchmarkResult] {
@@ -179,7 +187,8 @@ public struct CryptoBenchmark {
     private func iterationsFor(dataSize: Int) -> Int {
         let assumedBytesPerSecond = 15.0 * 1024 * 1024 * 1024
         let raw = targetSeconds * assumedBytesPerSecond / Double(dataSize)
-        return max(minIterations, min(maxIterations, Int(raw)))
+        let bounded = min(Double(maxIterations), max(Double(minIterations), raw))
+        return Int(bounded)
     }
 
     /// Размер пачки: сколько операций выполнять между двумя замерами таймера.
